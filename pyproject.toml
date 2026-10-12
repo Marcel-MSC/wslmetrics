@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wslmetrics"
+version = "0.1.0"
+description = "TUI to monitor host and Docker CPU/RAM usage on WSL"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "psutil>=5.9",
+    "docker>=7.0",
+    "textual>=1.0",
+    "plotext>=5.2,<6",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+]
+
+[project.scripts]
+wslmetrics = "wslmetrics.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

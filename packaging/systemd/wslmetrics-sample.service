@@ -1,0 +1,12 @@
+[Unit]
+Description=wslmetrics metrics sample
+After=network.target
+
+[Service]
+Type=oneshot
+# install-job rewrites ExecStart to the absolute wslmetrics path
+ExecStart=/usr/bin/env wslmetrics sample
+Nice=10
+
+[Install]
+WantedBy=default.target
