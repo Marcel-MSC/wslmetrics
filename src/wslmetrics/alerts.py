@@ -102,6 +102,23 @@ def evaluate_alerts(summary: SystemSummary, cfg: AlertConfig) -> list[AlertEvent
                 threshold=cfg.wsl_mem_percent,
             )
         )
+    if (
+        cfg.swap_percent is not None
+        and summary.swap_percent >= cfg.swap_percent
+    ):
+        events.append(
+            AlertEvent(
+                kind="swap_percent",
+                message=(
+                    f"Swap {format_percent(summary.swap_percent)} "
+                    f"(threshold {format_percent(cfg.swap_percent)}) — "
+                    f"{format_bytes(summary.swap_used)}/"
+                    f"{format_bytes(summary.swap_total)}"
+                ),
+                value=summary.swap_percent,
+                threshold=cfg.swap_percent,
+            )
+        )
     return events
 
 

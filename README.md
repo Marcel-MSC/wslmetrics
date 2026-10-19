@@ -1,6 +1,6 @@
 # wslmetrics
 
-TUI no terminal para monitorar **CPU** e **RAM** no WSL: top processos (agrupados ou por PID), containers Docker, diffs de RAM, histórico com gráficos, alertas e export CSV.
+TUI no terminal para monitorar **CPU**, **RAM** e **swap** no WSL: top processos (agrupados ou por PID), containers Docker, diffs de RAM, histórico com gráficos, alertas e export CSV.
 
 ## Requisitos
 
@@ -101,23 +101,27 @@ wslmetrics --top 50
 | `c`   | Ordenar por CPU (Processes + Containers)  |
 | `m`   | Ordenar por RAM (Processes + Containers)  |
 | `g`   | Agrupar processos por nome (`chrome × N`) |
+| `s`   | Persist ON/OFF — grava samples no SQLite (sem alertas) |
 | `t`   | Alterar `top` na sessão                   |
 | `i`   | Alterar `interval` (s) na sessão          |
 | `/`   | Filtrar por nome (Processes + Containers) |
 | `Esc` | Fechar prompt / limpar filtro             |
 
-Com **GROUP ON**, aparece um badge amarelo e o subtítulo `GROUP ON` no header.
+Com **GROUP ON**, aparece um badge amarelo e o subtítulo `GROUP ON` no header.  
+Com **PERSIST ON**, grava no SQLite no máximo a cada `sample_interval_seconds` (config) — útil para History/Diffs sem o job systemd; **não** dispara alertas.  
+Com alerta recente (dentro do cooldown), aparece o badge **ALERT**.
 
 Abas:
 
 - **Processes** — por PID ou agrupado (`g`)
 - **Containers** — sort `c`/`m` + filtro `/`
-- **Diffs** — quem cresceu de RAM desde o último sample e na última 1h
-- **History** — gráficos separados de RAM% e CPU%
+- **Diffs** — crescimento de RAM de processos e containers (último sample + última 1h)
+- **History** — gráficos de RAM%, CPU% e Docker mem
+- **Alerts** — thresholds, cooldown e tail de `alerts.log`
 
 ## Histórico e jobs
 
-O histórico **não depende da TUI**. Um job `systemd --user` coleta samples periodicamente.
+O histórico é preenchido pelo job `systemd --user`, por `wslmetrics sample`, ou pela TUI com **PERSIST ON** (`s`).
 
 ```bash
 wslmetrics sample          # uma coleta manual → SQLite + alertas
@@ -149,19 +153,22 @@ alerts:
   cpu_percent: 95
   docker_mem_bytes: null
   wsl_mem_percent: 90   # null desliga; usa memory= do .wslconfig
+  swap_percent: null    # null desliga; % de swap do host
   cooldown_seconds: 300
 sample_interval_seconds: 30
 ```
 
-Quando um threshold é cruzado (respeitando cooldown):
+Quando um threshold é cruzado (respeitando cooldown) no `sample` / job:
 
 1. Linha em `~/.local/state/wslmetrics/alerts.log`
 2. Notificação via `notify-send` (WSLg), se disponível
 
+A aba **Alerts** só lê log/state (não avalia thresholds no refresh live).
+
 ### Limite WSL (`.wslconfig`)
 
-O app lê `memory=` da seção `[wsl2]` em `%USERPROFILE%\.wslconfig` (via `/mnt/c/Users/...`).  
-Se encontrar, a summary bar mostra `WSL used/limit` e o alerta `wsl_mem_percent` dispara perto do teto da VM.
+O app lê `memory=` e `swap=` da seção `[wsl2]` em `%USERPROFILE%\.wslconfig` (via `/mnt/c/Users/...`).  
+Se encontrar, a summary bar mostra uso vs limite WSL; o alerta `wsl_mem_percent` dispara perto do teto de RAM da VM. Swap real vem de `psutil`; o limite `swap=` do `.wslconfig` aparece quando disponível.
 
 ## Export CSV
 

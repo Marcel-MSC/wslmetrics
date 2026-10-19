@@ -14,6 +14,7 @@ def _cfg(**kwargs) -> AlertConfig:
         cpu_percent=95.0,
         docker_mem_bytes=None,
         wsl_mem_percent=90.0,
+        swap_percent=None,
         cooldown_seconds=300,
     )
     base.update(kwargs)
@@ -52,6 +53,22 @@ def test_evaluate_alerts_thresholds() -> None:
 
 def test_evaluate_alerts_none_when_under() -> None:
     assert evaluate_alerts(_summary(), _cfg()) == []
+
+
+def test_evaluate_alerts_swap_percent() -> None:
+    events = evaluate_alerts(
+        _summary(swap_percent=80.0, swap_used=1_000_000, swap_total=2_000_000),
+        _cfg(swap_percent=75.0),
+    )
+    assert [e.kind for e in events] == ["swap_percent"]
+    assert evaluate_alerts(
+        _summary(swap_percent=50.0),
+        _cfg(swap_percent=75.0),
+    ) == []
+    assert evaluate_alerts(
+        _summary(swap_percent=99.0),
+        _cfg(swap_percent=None),
+    ) == []
 
 
 def test_dispatch_alerts_cooldown(tmp_path: Path) -> None:
