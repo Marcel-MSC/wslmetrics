@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from wslmetrics.models import GroupedProcessRow, SystemSummary
+from wslmetrics.models import ContainerRow, GroupedProcessRow, SystemSummary
 from wslmetrics.storage import (
     BUCKET_5M,
     MED_RETENTION_S,
@@ -112,3 +112,36 @@ def test_process_rss_deltas_and_growth(store_path: Path) -> None:
         assert growth[0].name == "chrome"
         assert growth[0].rss_before == 100
         assert growth[0].rss_after == 180
+
+
+def test_container_mem_deltas_and_growth(store_path: Path) -> None:
+    t0 = 1_900_000_000
+    t1 = t0 + 30
+    c0 = (
+        ContainerRow(
+            "api", "a1", 1.0, 100_000_000, 512_000_000, 20.0, "running", "api:1"
+        ),
+        ContainerRow(
+            "db", "b1", 1.0, 200_000_000, 512_000_000, 40.0, "running", "db:1"
+        ),
+    )
+    c1 = (
+        ContainerRow(
+            "api", "a1", 1.0, 180_000_000, 512_000_000, 35.0, "running", "api:1"
+        ),
+        ContainerRow(
+            "db", "b1", 1.0, 190_000_000, 512_000_000, 37.0, "running", "db:1"
+        ),
+    )
+    with MetricsStore(store_path) as store:
+        store.insert_sample(_summary(), (), c0, ts=t0)
+        store.insert_sample(_summary(), (), c1, ts=t1)
+        deltas = store.container_mem_deltas(top=10)
+        assert deltas[0].name == "api"
+        assert deltas[0].mem_delta == 80_000_000
+        assert all(d.mem_delta > 0 for d in deltas)
+
+        growth = store.container_mem_growth(window_seconds=3600, top=10)
+        assert growth[0].name == "api"
+        assert growth[0].mem_before == 100_000_000
+        assert growth[0].mem_after == 180_000_000

@@ -39,6 +39,14 @@ class ProcessDelta:
 
 
 @dataclass(frozen=True, slots=True)
+class ContainerDelta:
+    name: str
+    mem_before: int
+    mem_after: int
+    mem_delta: int
+
+
+@dataclass(frozen=True, slots=True)
 class ContainerRow:
     name: str
     short_id: str
@@ -62,6 +70,11 @@ class SystemSummary:
     docker_error: str | None = None
     wsl_mem_limit: int | None = None
     wsl_mem_percent: float | None = None
+    swap_total: int = 0
+    swap_used: int = 0
+    swap_percent: float = 0.0
+    wsl_swap_limit: int | None = None
+    wsl_swap_percent: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -2,24 +2,73 @@ from __future__ import annotations
 
 import time
 from dataclasses import replace
+from typing import Sequence
 
 import psutil
 
 from wslmetrics.alerts import dispatch_alerts, evaluate_alerts
 from wslmetrics.collectors import DockerCollector, HostCollector
 from wslmetrics.config import load_config
-from wslmetrics.models import SortKey
+from wslmetrics.models import (
+    ContainerRow,
+    GroupedProcessRow,
+    ProcessRow,
+    SortKey,
+    SystemSummary,
+)
 from wslmetrics.storage import MetricsStore
-from wslmetrics.wsl_limit import get_wsl_memory_limit, wsl_usage_percent
+from wslmetrics.wsl_limit import (
+    get_wsl_memory_limit,
+    get_wsl_swap_limit,
+    wsl_usage_percent,
+)
 
 
-def enrich_summary_wsl(summary):
-    limit = get_wsl_memory_limit()
+def enrich_summary_wsl(summary: SystemSummary) -> SystemSummary:
+    mem_limit = get_wsl_memory_limit()
+    swap_limit = get_wsl_swap_limit()
     return replace(
         summary,
-        wsl_mem_limit=limit,
-        wsl_mem_percent=wsl_usage_percent(summary.mem_used, limit),
+        wsl_mem_limit=mem_limit,
+        wsl_mem_percent=wsl_usage_percent(summary.mem_used, mem_limit),
+        wsl_swap_limit=swap_limit,
+        wsl_swap_percent=wsl_usage_percent(summary.swap_used, swap_limit),
     )
+
+
+def persist_snapshot(
+    summary: SystemSummary,
+    processes: Sequence[ProcessRow],
+    containers: Sequence[ContainerRow],
+    *,
+    groups: Sequence[GroupedProcessRow] | None = None,
+    top_n: int = 5,
+    group_n: int = 15,
+    store: MetricsStore | None = None,
+) -> int:
+    """Insert sample + maintain retention. Does not evaluate alerts."""
+    if store is not None:
+        ts = store.insert_sample(
+            summary,
+            processes,
+            containers,
+            groups=groups,
+            top_n=top_n,
+            group_n=group_n,
+        )
+        store.maintain(now=ts)
+        return ts
+
+    with MetricsStore() as owned:
+        return persist_snapshot(
+            summary,
+            processes,
+            containers,
+            groups=groups,
+            top_n=top_n,
+            group_n=group_n,
+            store=owned,
+        )
 
 
 def run_sample(*, cpu_prime_seconds: float = 0.25) -> dict:
@@ -47,11 +96,9 @@ def run_sample(*, cpu_prime_seconds: float = 0.25) -> dict:
         docker_error=docker.error,
     )
 
-    with MetricsStore() as store:
-        ts = store.insert_sample(
-            summary, processes, containers, groups=groups, top_n=5, group_n=15
-        )
-        store.maintain(now=ts)
+    ts = persist_snapshot(
+        summary, processes, containers, groups=groups, top_n=5, group_n=15
+    )
 
     events = evaluate_alerts(summary, cfg.alerts)
     fired = dispatch_alerts(events, cfg.alerts)
@@ -62,6 +109,7 @@ def run_sample(*, cpu_prime_seconds: float = 0.25) -> dict:
         "mem_percent": summary.mem_percent,
         "docker_mem": summary.docker_mem_total,
         "wsl_mem_percent": summary.wsl_mem_percent,
+        "swap_percent": summary.swap_percent,
         "alerts_fired": [e.kind for e in fired],
         "docker_available": summary.docker_available,
     }

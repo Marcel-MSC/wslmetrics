@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-_MEMORY_RE = re.compile(
-    r"^\s*memory\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*([KMGT]?B?)?\s*$",
+_KEY_VALUE_RE = re.compile(
+    r"^\s*(memory|swap)\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*([KMGT]?B?)?\s*$",
     re.IGNORECASE,
 )
 _SECTION_RE = re.compile(r"^\s*\[([^\]]+)\]\s*$")
+
+
+@dataclass(frozen=True, slots=True)
+class WslLimits:
+    memory: int | None = None
+    swap: int | None = None
 
 
 def parse_memory_value(raw: str) -> int | None:
@@ -39,8 +46,11 @@ def parse_memory_value(raw: str) -> int | None:
     return int(amount * mult)
 
 
-def parse_wslconfig_memory(text: str) -> int | None:
+def parse_wslconfig_limits(text: str) -> WslLimits:
+    """Parse memory= and swap= from the [wsl2] section."""
     section: str | None = None
+    memory: int | None = None
+    swap: int | None = None
     for line in text.splitlines():
         stripped = line.split(";", 1)[0].split("#", 1)[0].strip()
         if not stripped:
@@ -51,11 +61,27 @@ def parse_wslconfig_memory(text: str) -> int | None:
             continue
         if section != "wsl2":
             continue
-        mem = _MEMORY_RE.match(stripped)
-        if mem:
-            unit = mem.group(2) or ""
-            return parse_memory_value(f"{mem.group(1)}{unit}")
-    return None
+        kv = _KEY_VALUE_RE.match(stripped)
+        if not kv:
+            continue
+        key = kv.group(1).lower()
+        unit = kv.group(3) or ""
+        value = parse_memory_value(f"{kv.group(2)}{unit}")
+        if value is None or value <= 0:
+            continue
+        if key == "memory" and memory is None:
+            memory = value
+        elif key == "swap" and swap is None:
+            swap = value
+    return WslLimits(memory=memory, swap=swap)
+
+
+def parse_wslconfig_memory(text: str) -> int | None:
+    return parse_wslconfig_limits(text).memory
+
+
+def parse_wslconfig_swap(text: str) -> int | None:
+    return parse_wslconfig_limits(text).swap
 
 
 def _env_userprofile_path() -> Path | None:
@@ -109,24 +135,36 @@ def _candidate_wslconfig_paths() -> list[Path]:
 
 
 @lru_cache(maxsize=1)
-def get_wsl_memory_limit() -> int | None:
-    """Return WSL2 memory= limit from .wslconfig in bytes, or None."""
+def get_wsl_limits() -> WslLimits:
+    """Return WSL2 memory=/swap= limits from .wslconfig, or empty limits."""
     for path in _candidate_wslconfig_paths():
         try:
             if not path.is_file():
                 continue
-            limit = parse_wslconfig_memory(
+            limits = parse_wslconfig_limits(
                 path.read_text(encoding="utf-8", errors="ignore")
             )
-            if limit and limit > 0:
-                return limit
+            if limits.memory or limits.swap:
+                return limits
         except OSError:
             continue
-    return None
+    return WslLimits()
 
 
-def wsl_usage_percent(mem_used: int, limit: int | None = None) -> float | None:
+@lru_cache(maxsize=1)
+def get_wsl_memory_limit() -> int | None:
+    """Return WSL2 memory= limit from .wslconfig in bytes, or None."""
+    return get_wsl_limits().memory
+
+
+@lru_cache(maxsize=1)
+def get_wsl_swap_limit() -> int | None:
+    """Return WSL2 swap= limit from .wslconfig in bytes, or None."""
+    return get_wsl_limits().swap
+
+
+def wsl_usage_percent(used: int, limit: int | None = None) -> float | None:
     lim = limit if limit is not None else get_wsl_memory_limit()
     if not lim:
         return None
-    return (mem_used / lim) * 100.0
+    return (used / lim) * 100.0

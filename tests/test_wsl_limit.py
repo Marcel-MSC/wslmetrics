@@ -1,6 +1,12 @@
 from unittest.mock import patch
 
-from wslmetrics.wsl_limit import parse_memory_value, parse_wslconfig_memory, wsl_usage_percent
+from wslmetrics.wsl_limit import (
+    parse_memory_value,
+    parse_wslconfig_limits,
+    parse_wslconfig_memory,
+    parse_wslconfig_swap,
+    wsl_usage_percent,
+)
 
 
 def test_parse_memory_value() -> None:
@@ -18,16 +24,23 @@ memory=16GB
 swap=2GB
 """
     assert parse_wslconfig_memory(text) == 16 * 1024**3
+    assert parse_wslconfig_swap(text) == 2 * 1024**3
+    limits = parse_wslconfig_limits(text)
+    assert limits.memory == 16 * 1024**3
+    assert limits.swap == 2 * 1024**3
 
 
 def test_parse_wslconfig_ignores_other_sections() -> None:
     text = """
 [user]
 memory=99GB
+swap=9GB
 [wsl2]
 memory=4G
+swap=1G
 """
     assert parse_wslconfig_memory(text) == 4 * 1024**3
+    assert parse_wslconfig_swap(text) == 1 * 1024**3
 
 
 def test_wsl_usage_percent() -> None:

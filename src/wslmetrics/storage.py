@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from wslmetrics.models import (
+    ContainerDelta,
     ContainerRow,
     GroupedProcessRow,
     ProcessDelta,
@@ -467,6 +468,86 @@ class MetricsStore:
                 )
             )
         deltas.sort(key=lambda d: d.rss_delta, reverse=True)
+        return deltas[: max(1, top)]
+
+    def _containers_at(self, ts: int) -> dict[str, int]:
+        """name -> mem bytes at timestamp."""
+        rows = self._conn.execute(
+            """
+            SELECT name, mem
+            FROM containers
+            WHERE ts = ?
+            """,
+            (ts,),
+        ).fetchall()
+        return {str(r["name"]): int(r["mem"]) for r in rows}
+
+    def container_mem_deltas(self, *, top: int = 10) -> list[ContainerDelta]:
+        """Top positive mem deltas between the two latest samples (by name)."""
+        latest = self.latest_ts()
+        if latest is None:
+            return []
+        prev = self.previous_sample_ts(latest)
+        if prev is None:
+            return []
+        after = self._containers_at(latest)
+        before = self._containers_at(prev)
+        deltas: list[ContainerDelta] = []
+        for name in set(after) | set(before):
+            mem_after = after.get(name, 0)
+            mem_before = before.get(name, 0)
+            delta = mem_after - mem_before
+            if delta <= 0:
+                continue
+            deltas.append(
+                ContainerDelta(
+                    name=name,
+                    mem_before=mem_before,
+                    mem_after=mem_after,
+                    mem_delta=delta,
+                )
+            )
+        deltas.sort(key=lambda d: d.mem_delta, reverse=True)
+        return deltas[: max(1, top)]
+
+    def container_mem_growth(
+        self, *, window_seconds: int = 3600, top: int = 10
+    ) -> list[ContainerDelta]:
+        """Top positive container mem growth from earliest sample in window."""
+        latest = self.latest_ts()
+        if latest is None:
+            return []
+        start = latest - max(1, window_seconds)
+        row = self._conn.execute(
+            """
+            SELECT MIN(ts) AS ts FROM samples
+            WHERE ts BETWEEN ? AND ?
+            """,
+            (start, latest),
+        ).fetchone()
+        if not row or row["ts"] is None:
+            return []
+        first = int(row["ts"])
+        if first == latest:
+            return []
+        after = self._containers_at(latest)
+        before = self._containers_at(first)
+        deltas: list[ContainerDelta] = []
+        for name in set(after) | set(before):
+            mem_after = after.get(name, 0)
+            mem_before = before.get(name, 0)
+            delta = mem_after - mem_before
+            if delta <= 0:
+                continue
+            deltas.append(
+                ContainerDelta(
+                    name=name,
+                    mem_before=mem_before,
+                    mem_after=mem_after,
+                    mem_delta=delta,
+                )
+            )
+        deltas.sort(key=lambda d: d.mem_delta, reverse=True)
         return deltas[: max(1, top)]
 
     def stats_for(self, points: Iterable[SamplePoint]) -> dict[str, float]:

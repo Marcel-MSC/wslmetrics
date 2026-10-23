@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
@@ -20,20 +21,27 @@ from textual.widgets import (
     TabPane,
 )
 
+from wslmetrics.alerts_view import has_hot_alert, render_alerts_text
 from wslmetrics.collectors import DockerCollector, HostCollector
+from wslmetrics.config import load_config
 from wslmetrics.diffs import render_diffs_text
 from wslmetrics.formatting import format_bytes, format_percent
 from wslmetrics.history import render_history_text
-from wslmetrics.loading import RamLoader
+from wslmetrics.loading import (
+    LOADING_INTERVAL,
+    LoadingAnimator,
+    RamLoader,
+    SUMMARY_FRAMES,
+)
 from wslmetrics.models import Snapshot, SortKey, SystemSummary
-from wslmetrics.sample import enrich_summary_wsl
+from wslmetrics.sample import enrich_summary_wsl, persist_snapshot
 
 
 class SummaryBar(Static):
     """Top summary strip with host (and Docker/WSL) totals."""
 
-    def show_loading(self) -> None:
-        self.update("◈ RAM [░░░░░░░░] reading cells…")
+    def show_loading(self, message: str | None = None) -> None:
+        self.update(message or SUMMARY_FRAMES[0])
 
     def update_from(self, summary: SystemSummary) -> None:
         host = (
@@ -42,25 +50,42 @@ class SummaryBar(Static):
             f"CPU {format_percent(summary.cpu_percent)}  ·  "
             f"avail {format_bytes(summary.mem_available)}"
         )
+        parts = [host]
         if summary.wsl_mem_limit is not None and summary.wsl_mem_percent is not None:
-            wsl = (
-                f"  ·  WSL {format_bytes(summary.mem_used)}/"
+            parts.append(
+                f"WSL {format_bytes(summary.mem_used)}/"
                 f"{format_bytes(summary.wsl_mem_limit)} "
                 f"({format_percent(summary.wsl_mem_percent)})"
             )
-        else:
-            wsl = ""
+        if summary.swap_total > 0 or summary.wsl_swap_limit is not None:
+            swap = (
+                f"Swap {format_bytes(summary.swap_used)}/"
+                f"{format_bytes(summary.swap_total)} "
+                f"({format_percent(summary.swap_percent)})"
+            )
+            if (
+                summary.wsl_swap_limit is not None
+                and summary.wsl_swap_percent is not None
+            ):
+                swap += (
+                    f" · WSL swap {format_bytes(summary.swap_used)}/"
+                    f"{format_bytes(summary.wsl_swap_limit)} "
+                    f"({format_percent(summary.wsl_swap_percent)})"
+                )
+            parts.append(swap)
         if summary.docker_available:
-            docker = f"  ·  Docker mem {format_bytes(summary.docker_mem_total)}"
+            parts.append(f"Docker mem {format_bytes(summary.docker_mem_total)}")
         else:
-            docker = "  ·  Docker unavailable"
-        self.update(host + wsl + docker)
+            parts.append("Docker unavailable")
+        self.update("  ·  ".join(parts))
 
 
 class MonitorApp(App[None]):
     """Live TUI for host processes and Docker container stats."""
 
     TITLE = "wslmetrics"
+    # Avoid autofocus on the hidden filter/session Inputs (steals hotkeys).
+    AUTO_FOCUS = None
     CSS = """
     Screen {
         layout: vertical;
@@ -74,16 +99,27 @@ class MonitorApp(App[None]):
         text-style: bold;
     }
 
-    #group-badge {
+    #group-badge, #persist-badge, #alert-badge {
         height: 1;
         padding: 0 1;
-        background: $warning;
         color: $text;
         text-style: bold;
         display: none;
     }
 
-    #group-badge.visible {
+    #group-badge {
+        background: $warning;
+    }
+
+    #persist-badge {
+        background: $success;
+    }
+
+    #alert-badge {
+        background: $error;
+    }
+
+    #group-badge.visible, #persist-badge.visible, #alert-badge.visible {
         display: block;
     }
 
@@ -111,7 +147,7 @@ class MonitorApp(App[None]):
         height: 1fr;
     }
 
-    #history-view, #diffs-view {
+    #history-view, #diffs-view, #alerts-view {
         height: 1fr;
         padding: 0 1;
         overflow-y: auto;
@@ -132,6 +168,7 @@ class MonitorApp(App[None]):
         Binding("c", "sort_cpu", "Sort CPU"),
         Binding("m", "sort_mem", "Sort MEM"),
         Binding("g", "toggle_group", "Group"),
+        Binding("s", "toggle_persist", "Persist"),
         Binding("t", "edit_top", "Top"),
         Binding("i", "edit_interval", "Interval"),
         Binding("slash", "toggle_filter", "Filter"),
@@ -142,6 +179,7 @@ class MonitorApp(App[None]):
     filter_text: reactive[str] = reactive("")
     snapshot: reactive[Snapshot | None] = reactive(None)
     group_by_name: reactive[bool] = reactive(False)
+    persist_enabled: reactive[bool] = reactive(False)
 
     def __init__(self, *, interval: float = 1.0, top: int = 30) -> None:
         super().__init__()
@@ -155,26 +193,34 @@ class MonitorApp(App[None]):
         self._live_ready = False
         self._history_ready = False
         self._diffs_ready = False
+        self._alerts_ready = False
         self._proc_grouped_columns = False
         self._poll_timer: Timer | None = None
         self._session_field: str | None = None  # "top" | "interval"
-        self._summary_frames = (
-            "◈ RAM [░░░░░░░░] reading cells…",
-            "◈ RAM [▓░░░░░░░] reading cells…",
-            "◈ RAM [▓▓░░░░░░] reading cells…",
-            "◈ RAM [▓▓▓░░░░░] reading cells…",
-            "◈ RAM [▓▓▓▓░░░░] reading cells…",
-            "◈ RAM [▓▓▓▓▓░░░] reading cells…",
-            "◈ RAM [▓▓▓▓▓▓░░] reading cells…",
-            "◈ RAM [▓▓▓▓▓▓▓░] reading cells…",
-            "◈ RAM [▓▓▓▓▓▓▓▓] reading cells…",
-        )
-        self._summary_frame = 0
+        self._last_persist_ts = 0
+        self._last_persist_ok: int | None = None
+        try:
+            self._sample_interval = load_config().sample_interval_seconds
+        except Exception:  # noqa: BLE001
+            self._sample_interval = 30
+        # Gates summary bar + center RamLoaders for the initial boot.
+        self._boot_loading = LoadingAnimator(SUMMARY_FRAMES)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield SummaryBar(id="summary")
-        yield Static("GROUP ON — processes aggregated by name (press g to turn off)", id="group-badge")
+        yield Static(
+            "GROUP ON — processes aggregated by name (press g to turn off)",
+            id="group-badge",
+        )
+        yield Static(
+            "PERSIST ON — writing samples to SQLite (no alerts; press s to turn off)",
+            id="persist-badge",
+        )
+        yield Static(
+            "ALERT — threshold fired recently (see Alerts tab)",
+            id="alert-badge",
+        )
         with Horizontal(id="filter-row"):
             yield Label("Filter:")
             yield Input(placeholder="name…", id="filter-input")
@@ -204,22 +250,43 @@ class MonitorApp(App[None]):
             with TabPane("History", id="history"):
                 yield RamLoader(id="history-loader")
                 yield Static("", id="history-view", classes="hidden")
+            with TabPane("Alerts", id="alerts"):
+                yield RamLoader(id="alerts-loader")
+                yield Static("", id="alerts-view", classes="hidden")
         yield Static("◈ RAM warming up…", id="status")
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#summary", SummaryBar).show_loading()
-        self.set_interval(0.12, self._tick_summary_loading)
+        first = self._boot_loading.start()
+        self.query_one("#summary", SummaryBar).show_loading(first)
+        self.set_interval(LOADING_INTERVAL, self._tick_boot_loading)
 
         self._ensure_proc_columns(grouped=False)
 
         docker_table = self.query_one("#docker-table", DataTable)
         docker_table.add_columns("NAME", "ID", "CPU%", "MEM", "MEM%", "STATUS", "IMAGE")
 
+        # Keep prompt inputs out of the focus cycle until their row is shown.
+        self.query_one("#filter-input", Input).can_focus = False
+        self.query_one("#session-input", Input).can_focus = False
+
         self._restart_poll_timer()
         self.collect_snapshot()
         self.refresh_history()
         self.refresh_diffs()
+        self.refresh_alerts()
+        self._refresh_alert_badge()
+
+    def _focus_main(self) -> None:
+        """Return focus to the live table so app bindings work."""
+        try:
+            table = self.query_one("#proc-table", DataTable)
+            if not table.has_class("hidden"):
+                table.focus()
+                return
+        except Exception:  # noqa: BLE001
+            pass
+        self.set_focus(None)
 
     def _restart_poll_timer(self) -> None:
         if self._poll_timer is not None:
@@ -237,13 +304,24 @@ class MonitorApp(App[None]):
             table.add_columns("NAME", "PID", "CPU%", "MEM%", "RSS", "USER")
         self._proc_grouped_columns = grouped
 
-    def _tick_summary_loading(self) -> None:
-        if self._live_ready:
+    def _tick_boot_loading(self) -> None:
+        if not self._boot_loading.active:
             return
-        self._summary_frame = (self._summary_frame + 1) % len(self._summary_frames)
-        self.query_one("#summary", SummaryBar).update(
-            self._summary_frames[self._summary_frame]
-        )
+        self.query_one("#summary", SummaryBar).update(self._boot_loading.tick())
+        # Keep summary + center loaders for at least 2s; longer if sample pending.
+        if self._boot_loading.should_finish(self.snapshot is not None):
+            self._finish_boot_loading()
+
+    def _finish_boot_loading(self) -> None:
+        """End boot animation: real summary + reveal live tables."""
+        if not self._boot_loading.active:
+            return
+        self._boot_loading.stop()
+        if self.snapshot is not None:
+            self.query_one("#summary", SummaryBar).update_from(self.snapshot.summary)
+        if not self._live_ready:
+            self._live_ready = True
+        self._hide_live_loading()
 
     def on_tabbed_content_tab_activated(
         self, event: TabbedContent.TabActivated
@@ -254,6 +332,8 @@ class MonitorApp(App[None]):
             self.refresh_history(show_loader=not self._history_ready)
         elif pane_id == "diffs":
             self.refresh_diffs(show_loader=not self._diffs_ready)
+        elif pane_id == "alerts":
+            self.refresh_alerts(show_loader=not self._alerts_ready)
         elif not self._live_ready:
             self._show_live_loading()
 
@@ -263,7 +343,9 @@ class MonitorApp(App[None]):
     def watch_snapshot(self, snapshot: Snapshot | None) -> None:
         if snapshot is None:
             return
-        self.query_one("#summary", SummaryBar).update_from(snapshot.summary)
+        # During boot loading, leave the summary animation alone.
+        if not self._boot_loading.active:
+            self.query_one("#summary", SummaryBar).update_from(snapshot.summary)
         self._render_processes(snapshot)
         self._render_containers(snapshot)
         self._update_status(snapshot)
@@ -272,6 +354,9 @@ class MonitorApp(App[None]):
             self.refresh_history(show_loader=False)
         if self._active_tab == "diffs" or self._history_ticks % 10 == 0:
             self.refresh_diffs(show_loader=False)
+        if self._active_tab == "alerts" or self._history_ticks % 10 == 0:
+            self.refresh_alerts(show_loader=False)
+            self._refresh_alert_badge()
 
     def watch_sort_key(self, _: SortKey) -> None:
         if self.snapshot is not None:
@@ -284,17 +369,43 @@ class MonitorApp(App[None]):
             self._render_processes(self.snapshot)
             self._render_containers(self.snapshot)
 
-    def watch_group_by_name(self, grouped: bool) -> None:
-        badge = self.query_one("#group-badge", Static)
-        if grouped:
-            badge.add_class("visible")
-            self.sub_title = "GROUP ON"
-        else:
-            badge.remove_class("visible")
-            self.sub_title = ""
+    def watch_group_by_name(self, _: bool) -> None:
+        self._update_header_badges()
         if self.snapshot is not None:
             self._render_processes(self.snapshot)
             self._update_status(self.snapshot)
+
+    def watch_persist_enabled(self, _: bool) -> None:
+        self._update_header_badges()
+        self._update_status()
+
+    def _update_header_badges(self) -> None:
+        group = self.query_one("#group-badge", Static)
+        persist = self.query_one("#persist-badge", Static)
+        if self.group_by_name:
+            group.add_class("visible")
+        else:
+            group.remove_class("visible")
+        if self.persist_enabled:
+            persist.add_class("visible")
+        else:
+            persist.remove_class("visible")
+        parts: list[str] = []
+        if self.group_by_name:
+            parts.append("GROUP ON")
+        if self.persist_enabled:
+            parts.append("PERSIST ON")
+        if has_hot_alert():
+            parts.append("ALERT")
+        self.sub_title = " · ".join(parts)
+
+    def _refresh_alert_badge(self) -> None:
+        badge = self.query_one("#alert-badge", Static)
+        if has_hot_alert():
+            badge.add_class("visible")
+        else:
+            badge.remove_class("visible")
+        self._update_header_badges()
 
     @work(exclusive=True, thread=True)
     def collect_snapshot(self) -> None:
@@ -302,6 +413,8 @@ class MonitorApp(App[None]):
         docker = self._docker
         top = self.top
         sort_key = self.sort_key
+        persist = self.persist_enabled
+        sample_interval = self._sample_interval
 
         future_summary = self._executor.submit(host.summary)
         future_docker = self._executor.submit(docker.collect)
@@ -324,17 +437,46 @@ class MonitorApp(App[None]):
         )
         processes = future_procs.result()
         groups = future_groups.result()
+
+        persist_ts: int | None = None
+        if persist:
+            now = int(time.time())
+            if now - self._last_persist_ts >= sample_interval:
+                # Align with sample job: top 5 PIDs, top 15 groups, running only.
+                running = tuple(
+                    c for c in containers if "running" in (c.status or "").lower()
+                )
+                try:
+                    persist_ts = persist_snapshot(
+                        summary,
+                        processes[:5],
+                        running,
+                        groups=groups[:15],
+                        top_n=5,
+                        group_n=15,
+                    )
+                    self._last_persist_ts = now
+                except Exception:  # noqa: BLE001
+                    persist_ts = None
+
         snap = Snapshot(
             summary=summary,
             processes=processes,
             grouped_processes=groups,
             containers=containers,
         )
-        self.call_from_thread(self._apply_snapshot, snap)
+        self.call_from_thread(self._apply_snapshot, snap, persist_ts)
 
-    def _apply_snapshot(self, snap: Snapshot) -> None:
+    def _apply_snapshot(
+        self, snap: Snapshot, persist_ts: int | None = None
+    ) -> None:
+        if persist_ts is not None:
+            self._last_persist_ok = persist_ts
         self.snapshot = snap
-        if not self._live_ready:
+        # Sample ready mid-animation: finish only after the minimum loading time.
+        if self._boot_loading.should_finish(True):
+            self._finish_boot_loading()
+        elif not self._boot_loading.active and not self._live_ready:
             self._live_ready = True
             self._hide_live_loading()
 
@@ -349,6 +491,7 @@ class MonitorApp(App[None]):
         self.query_one("#docker-loader", RamLoader).add_class("hidden")
         self.query_one("#proc-table", DataTable).remove_class("hidden")
         self.query_one("#docker-table", DataTable).remove_class("hidden")
+        self._focus_main()
 
     def _show_history_loading(self) -> None:
         self.query_one("#history-loader", RamLoader).remove_class("hidden")
@@ -367,6 +510,15 @@ class MonitorApp(App[None]):
         self._diffs_ready = True
         self.query_one("#diffs-loader", RamLoader).add_class("hidden")
         self.query_one("#diffs-view", Static).remove_class("hidden")
+
+    def _show_alerts_loading(self) -> None:
+        self.query_one("#alerts-loader", RamLoader).remove_class("hidden")
+        self.query_one("#alerts-view", Static).add_class("hidden")
+
+    def _hide_alerts_loading(self) -> None:
+        self._alerts_ready = True
+        self.query_one("#alerts-loader", RamLoader).add_class("hidden")
+        self.query_one("#alerts-view", Static).remove_class("hidden")
 
     def _matches_filter(self, text: str) -> bool:
         needle = self.filter_text.strip().lower()
@@ -481,9 +633,17 @@ class MonitorApp(App[None]):
             docker = f"{len(snap.containers)} containers"
         else:
             docker = f"docker: {snap.summary.docker_error or 'unavailable'}"
+        if self.persist_enabled:
+            if self._last_persist_ok is not None:
+                persist = f"persist=ON last={self._last_persist_ok}"
+            else:
+                persist = f"persist=ON every {self._sample_interval}s"
+        else:
+            persist = "persist=off"
         self.query_one("#status", Static).update(
             f"sort={sort_label}  ·  mode={mode}  ·  top={self.top} (t)  ·  "
-            f"interval={self.interval:g}s (i)  ·  {filt} (procs+containers)  ·  {docker}"
+            f"interval={self.interval:g}s (i)  ·  {persist} (s)  ·  "
+            f"{filt} (procs+containers)  ·  {docker}"
         )
 
     @work(exclusive=True, thread=True)
@@ -511,6 +671,17 @@ class MonitorApp(App[None]):
         self.query_one("#diffs-view", Static).update(text)
         self._hide_diffs_loading()
 
+    @work(exclusive=True, thread=True)
+    def refresh_alerts(self, show_loader: bool = True) -> None:
+        if show_loader or not self._alerts_ready:
+            self.call_from_thread(self._show_alerts_loading)
+        text = render_alerts_text()
+        self.call_from_thread(self._apply_alerts, text)
+
+    def _apply_alerts(self, text: str) -> None:
+        self.query_one("#alerts-view", Static).update(text)
+        self._hide_alerts_loading()
+
     def action_refresh(self) -> None:
         if self._active_tab in {"processes", "containers"} and self._live_ready:
             self.query_one("#status", Static).update("◈ RAM refreshing…")
@@ -519,6 +690,9 @@ class MonitorApp(App[None]):
             self.refresh_history(show_loader=True)
         if self._active_tab == "diffs":
             self.refresh_diffs(show_loader=True)
+        if self._active_tab == "alerts":
+            self.refresh_alerts(show_loader=True)
+            self._refresh_alert_badge()
 
     def action_sort_cpu(self) -> None:
         self.sort_key = SortKey.CPU
@@ -530,6 +704,10 @@ class MonitorApp(App[None]):
 
     def action_toggle_group(self) -> None:
         self.group_by_name = not self.group_by_name
+
+    def action_toggle_persist(self) -> None:
+        self.persist_enabled = not self.persist_enabled
+
 
     def action_edit_top(self) -> None:
         self._open_session_prompt(
@@ -561,6 +739,7 @@ class MonitorApp(App[None]):
         row.add_class("visible")
         self.query_one("#session-label", Label).update(label)
         inp = self.query_one("#session-input", Input)
+        inp.can_focus = True
         inp.placeholder = placeholder
         inp.value = value
         inp.focus()
@@ -570,14 +749,20 @@ class MonitorApp(App[None]):
         if row.has_class("visible"):
             row.remove_class("visible")
         self._session_field = None
-        self.query_one("#session-input", Input).value = ""
+        inp = self.query_one("#session-input", Input)
+        inp.value = ""
+        inp.can_focus = False
+        self._focus_main()
 
     def _hide_filter_row(self) -> None:
         row = self.query_one("#filter-row")
         if row.has_class("visible"):
             row.remove_class("visible")
         self.filter_text = ""
-        self.query_one("#filter-input", Input).value = ""
+        inp = self.query_one("#filter-input", Input)
+        inp.value = ""
+        inp.can_focus = False
+        self._focus_main()
 
     def _apply_session_value(self, raw: str) -> None:
         field = self._session_field
@@ -600,11 +785,15 @@ class MonitorApp(App[None]):
         self._hide_session_row()
         row = self.query_one("#filter-row")
         row.toggle_class("visible")
+        inp = self.query_one("#filter-input", Input)
         if row.has_class("visible"):
-            self.query_one("#filter-input", Input).focus()
+            inp.can_focus = True
+            inp.focus()
         else:
             self.filter_text = ""
-            self.query_one("#filter-input", Input).value = ""
+            inp.value = ""
+            inp.can_focus = False
+            self._focus_main()
 
     def action_cancel_prompt(self) -> None:
         filter_row = self.query_one("#filter-row")
@@ -622,7 +811,6 @@ class MonitorApp(App[None]):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "filter-input":
             self.filter_text = event.value
-            self.query_one("#proc-table", DataTable).focus()
+            self._focus_main()
         elif event.input.id == "session-input":
             self._apply_session_value(event.value)
-            self.query_one("#proc-table", DataTable).focus()

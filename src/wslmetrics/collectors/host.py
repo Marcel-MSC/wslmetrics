@@ -29,12 +29,16 @@ class HostCollector:
 
     def summary(self) -> SystemSummary:
         mem = psutil.virtual_memory()
+        swap = psutil.swap_memory()
         return SystemSummary(
             mem_total=mem.total,
             mem_used=mem.used,
             mem_available=mem.available,
             mem_percent=mem.percent,
             cpu_percent=psutil.cpu_percent(interval=None),
+            swap_total=int(swap.total),
+            swap_used=int(swap.used),
+            swap_percent=float(swap.percent),
         )
 
     def _iter_process_rows(self) -> list[ProcessRow]:

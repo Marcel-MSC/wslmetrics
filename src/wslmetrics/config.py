@@ -14,6 +14,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "cpu_percent": 95,
         "docker_mem_bytes": None,
         "wsl_mem_percent": 90,
+        "swap_percent": None,
         "cooldown_seconds": 300,
     },
     "sample_interval_seconds": 30,
@@ -26,6 +27,7 @@ class AlertConfig:
     cpu_percent: float
     docker_mem_bytes: int | None
     wsl_mem_percent: float | None
+    swap_percent: float | None
     cooldown_seconds: int
 
 
@@ -75,6 +77,13 @@ def load_config(path: Path | None = None) -> AppConfig:
         except (TypeError, ValueError):
             wsl_mem = None
 
+    swap_pct = alerts_raw.get("swap_percent", defaults["swap_percent"])
+    if swap_pct is not None:
+        try:
+            swap_pct = float(swap_pct)
+        except (TypeError, ValueError):
+            swap_pct = None
+
     try:
         interval = int(
             raw.get(
@@ -95,6 +104,7 @@ def load_config(path: Path | None = None) -> AppConfig:
             ),
             docker_mem_bytes=docker_mem,
             wsl_mem_percent=wsl_mem,
+            swap_percent=swap_pct,
             cooldown_seconds=int(
                 alerts_raw.get("cooldown_seconds", defaults["cooldown_seconds"])
             ),
