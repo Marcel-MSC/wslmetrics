@@ -10,6 +10,28 @@ class SortKey(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class DiskMount:
+    path: str
+    total: int
+    used: int
+    free: int
+    percent: float
+
+
+@dataclass(frozen=True, slots=True)
+class DiskIO:
+    read_bytes: int
+    write_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class NetIO:
+    iface: str
+    rx_bytes: int
+    tx_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
 class ProcessRow:
     pid: int
     name: str
@@ -17,6 +39,8 @@ class ProcessRow:
     mem_percent: float
     rss_bytes: int
     username: str
+    ppid: int = 0
+    cmdline: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +83,20 @@ class ContainerRow:
 
 
 @dataclass(frozen=True, slots=True)
+class ProcessDetail:
+    pid: int
+    name: str
+    username: str
+    cpu_percent: float
+    mem_percent: float
+    rss_bytes: int
+    ppid: int
+    parent_name: str
+    cmdline: str
+    children: tuple[tuple[int, str], ...]  # (pid, name)
+
+
+@dataclass(frozen=True, slots=True)
 class SystemSummary:
     mem_total: int
     mem_used: int
@@ -75,6 +113,13 @@ class SystemSummary:
     swap_percent: float = 0.0
     wsl_swap_limit: int | None = None
     wsl_swap_percent: float | None = None
+    cpu_queue_1m: float = 0.0
+    cpu_queue_5m: float = 0.0
+    cpu_queue_15m: float = 0.0
+    disk_mounts: tuple[DiskMount, ...] = ()
+    disk_io: DiskIO | None = None
+    net_io: NetIO | None = None
+    cpu_per_core: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

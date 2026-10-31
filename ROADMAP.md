@@ -19,7 +19,7 @@ O núcleo atual cobre bem CPU/RAM/swap de host + Docker. Os itens abaixo são ex
 ## Médio valor (métricas WSL que faltam)
 
 6. **Disk / I/O** — `/` e mounts sob `/mnt/c` (pressão típica no WSL).
-7. **Load average + CPU por core**.
+7. **CPU queue (load average) + CPU por core**.
 8. **Network** — bytes in/out da interface WSL.
 9. **Detalhe de processo** — cmdline, tree, parent; opcionalmente kill com confirmação.
 10. **Export mais completo** — containers/groups, JSON, e talvez Prometheus textfile para Grafana.
@@ -49,7 +49,6 @@ O núcleo atual cobre bem CPU/RAM/swap de host + Docker. Os itens abaixo são ex
 - Alertas só rodam no pipeline de sample, não no refresh da TUI (aba Alerts é somente leitura).
 - ~~`docker_mem` é persistido e exportado, mas não plotado~~ — History inclui gráfico de Docker mem.
 - `.wslconfig`: `memory=` e `swap=` são lidos; `processors=` ainda não.
-- Export CSV não cobre `containers` / `process_groups`.
 - Diffs cobrem RSS por processo e mem por container (não PID, não CPU growth).
 - Sem instalador de job além de systemd `--user` (README menciona cron manual).
 
@@ -57,11 +56,11 @@ O núcleo atual cobre bem CPU/RAM/swap de host + Docker. Os itens abaixo são ex
 
 ## Próximo ciclo sugerido
 
-Prioridade após o ciclo de alto valor:
+Prioridade (UX / polish):
 
 1. Help overlay + pause  
-2. Disk / I/O (pressão típica no WSL)  
-3. Export containers/groups (CSV/JSON)  
+2. Editar thresholds na TUI  
+3. Fallback cron quando não houver systemd  
 
 ---
 
@@ -74,11 +73,11 @@ Prioridade após o ciclo de alto valor:
 | 3 | TUI persistindo samples | feito |
 | 4 | Swap + `.wslconfig` | feito |
 | 5 | Diffs de containers | feito |
-| 6 | Disk / I/O | pendente |
-| 7 | Load + CPU por core | pendente |
-| 8 | Network | pendente |
-| 9 | Detalhe de processo | pendente |
-| 10 | Export completo / JSON / Prometheus | pendente |
+| 6 | Disk / I/O | feito |
+| 7 | CPU queue + CPU por core | feito |
+| 8 | Network | feito |
+| 9 | Detalhe de processo | feito |
+| 10 | Export completo / JSON / Prometheus | feito |
 | 11 | Help + pause | pendente |
 | 12 | Editar thresholds | pendente |
 | 13 | Fallback cron | pendente |

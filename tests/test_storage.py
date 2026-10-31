@@ -114,6 +114,163 @@ def test_process_rss_deltas_and_growth(store_path: Path) -> None:
         assert growth[0].rss_after == 180
 
 
+def test_insert_persists_disk_load_net(store_path: Path) -> None:
+    from wslmetrics.models import DiskIO, DiskMount, NetIO
+
+    summary = _summary(
+        cpu_queue_1m=2.5,
+        disk_mounts=(
+            DiskMount("/", 100, 40, 60, 40.0),
+            DiskMount("/mnt/c", 200, 50, 150, 25.0),
+        ),
+        disk_io=DiskIO(read_bytes=10, write_bytes=20),
+        net_io=NetIO(iface="eth0", rx_bytes=30, tx_bytes=40),
+    )
+    with MetricsStore(store_path) as store:
+        store.insert_sample(summary, (), (), ts=1_710_000_000)
+        points = store.query_samples(
+            start=1_710_000_000, end=1_710_000_000, prefer="raw"
+        )
+        assert len(points) == 1
+        p = points[0]
+        assert p.cpu_queue_1m == 2.5
+        assert p.disk_root_percent == 40.0
+        assert p.disk_mntc_percent == 25.0
+        assert p.disk_read_bytes == 10
+        assert p.net_rx_bytes == 30
+
+
+def test_migrate_renames_load1_to_cpu_queue_1m(tmp_path: Path) -> None:
+    import sqlite3
+
+    path = tmp_path / "rename.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE samples (
+            ts INTEGER PRIMARY KEY,
+            cpu REAL NOT NULL,
+            mem_percent REAL NOT NULL,
+            mem_used INTEGER NOT NULL,
+            mem_total INTEGER NOT NULL,
+            docker_mem INTEGER NOT NULL DEFAULT 0,
+            load1 REAL NOT NULL DEFAULT 0
+        );
+        CREATE TABLE samples_5m (
+            ts INTEGER PRIMARY KEY,
+            cpu REAL NOT NULL,
+            mem_percent REAL NOT NULL,
+            mem_used INTEGER NOT NULL,
+            mem_total INTEGER NOT NULL,
+            docker_mem INTEGER NOT NULL DEFAULT 0,
+            n INTEGER NOT NULL DEFAULT 1,
+            load1 REAL NOT NULL DEFAULT 0
+        );
+        CREATE TABLE samples_1h (
+            ts INTEGER PRIMARY KEY,
+            cpu REAL NOT NULL,
+            mem_percent REAL NOT NULL,
+            mem_used INTEGER NOT NULL,
+            mem_total INTEGER NOT NULL,
+            docker_mem INTEGER NOT NULL DEFAULT 0,
+            n INTEGER NOT NULL DEFAULT 1,
+            load1 REAL NOT NULL DEFAULT 0
+        );
+        CREATE TABLE top_processes (
+            ts INTEGER NOT NULL, rank INTEGER NOT NULL, name TEXT NOT NULL,
+            pid INTEGER NOT NULL, cpu REAL NOT NULL, rss INTEGER NOT NULL,
+            PRIMARY KEY (ts, rank)
+        );
+        CREATE TABLE containers (
+            ts INTEGER NOT NULL, name TEXT NOT NULL, cpu REAL NOT NULL,
+            mem INTEGER NOT NULL, status TEXT NOT NULL, PRIMARY KEY (ts, name)
+        );
+        CREATE TABLE process_groups (
+            ts INTEGER NOT NULL, name TEXT NOT NULL, count INTEGER NOT NULL,
+            cpu REAL NOT NULL, rss INTEGER NOT NULL, PRIMARY KEY (ts, name)
+        );
+        INSERT INTO samples (ts, cpu, mem_percent, mem_used, mem_total, docker_mem, load1)
+        VALUES (42, 1.0, 2.0, 3, 4, 0, 1.75);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    with MetricsStore(path) as store:
+        cols = {
+            r["name"]
+            for r in store._conn.execute("PRAGMA table_info(samples)").fetchall()
+        }
+        assert "cpu_queue_1m" in cols
+        assert "load1" not in cols
+        points = store.query_samples(start=42, end=42, prefer="raw")
+        assert points[0].cpu_queue_1m == 1.75
+
+
+def test_migrate_adds_extra_columns_on_old_db(tmp_path: Path) -> None:
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE samples (
+            ts INTEGER PRIMARY KEY,
+            cpu REAL NOT NULL,
+            mem_percent REAL NOT NULL,
+            mem_used INTEGER NOT NULL,
+            mem_total INTEGER NOT NULL,
+            docker_mem INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE samples_5m (
+            ts INTEGER PRIMARY KEY,
+            cpu REAL NOT NULL,
+            mem_percent REAL NOT NULL,
+            mem_used INTEGER NOT NULL,
+            mem_total INTEGER NOT NULL,
+            docker_mem INTEGER NOT NULL DEFAULT 0,
+            n INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE TABLE samples_1h (
+            ts INTEGER PRIMARY KEY,
+            cpu REAL NOT NULL,
+            mem_percent REAL NOT NULL,
+            mem_used INTEGER NOT NULL,
+            mem_total INTEGER NOT NULL,
+            docker_mem INTEGER NOT NULL DEFAULT 0,
+            n INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE TABLE top_processes (
+            ts INTEGER NOT NULL, rank INTEGER NOT NULL, name TEXT NOT NULL,
+            pid INTEGER NOT NULL, cpu REAL NOT NULL, rss INTEGER NOT NULL,
+            PRIMARY KEY (ts, rank)
+        );
+        CREATE TABLE containers (
+            ts INTEGER NOT NULL, name TEXT NOT NULL, cpu REAL NOT NULL,
+            mem INTEGER NOT NULL, status TEXT NOT NULL, PRIMARY KEY (ts, name)
+        );
+        CREATE TABLE process_groups (
+            ts INTEGER NOT NULL, name TEXT NOT NULL, count INTEGER NOT NULL,
+            cpu REAL NOT NULL, rss INTEGER NOT NULL, PRIMARY KEY (ts, name)
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    with MetricsStore(path) as store:
+        cols = {
+            r["name"]
+            for r in store._conn.execute("PRAGMA table_info(samples)").fetchall()
+        }
+        assert "cpu_queue_1m" in cols
+        assert "disk_root_percent" in cols
+        assert "net_tx_bytes" in cols
+        store.insert_sample(_summary(cpu_queue_1m=3.0), (), (), ts=1)
+        points = store.query_samples(start=1, end=1, prefer="raw")
+        assert points[0].cpu_queue_1m == 3.0
+
+
 def test_container_mem_deltas_and_growth(store_path: Path) -> None:
     t0 = 1_900_000_000
     t1 = t0 + 30
