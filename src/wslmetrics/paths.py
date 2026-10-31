@@ -17,6 +17,7 @@ CONFIG_PATH = CONFIG_DIR / "config.yaml"
 DB_PATH = STATE_DIR / "metrics.db"
 ALERTS_LOG = STATE_DIR / "alerts.log"
 ALERT_STATE_PATH = STATE_DIR / "alert_state.json"
+PROM_TEXTFILE = STATE_DIR / "metrics.prom"
 SYSTEMD_USER_DIR = _xdg_home("XDG_CONFIG_HOME", ".config") / "systemd" / "user"
 
 

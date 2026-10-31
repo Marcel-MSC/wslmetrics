@@ -40,3 +40,42 @@ def test_history_section_empty_docker_mem() -> None:
         height=6,
     )
     assert "(no docker_mem data)" in "\n".join(lines)
+
+
+def test_history_section_load_and_disk() -> None:
+    points = [
+        SamplePoint(
+            ts=1,
+            cpu=1.0,
+            mem_percent=10.0,
+            mem_used=1,
+            mem_total=2,
+            docker_mem=0,
+            cpu_queue_1m=0.5,
+            disk_root_percent=40.0,
+            disk_mntc_percent=25.0,
+        ),
+        SamplePoint(
+            ts=2,
+            cpu=2.0,
+            mem_percent=20.0,
+            mem_used=1,
+            mem_total=2,
+            docker_mem=0,
+            cpu_queue_1m=1.5,
+            disk_root_percent=45.0,
+            disk_mntc_percent=30.0,
+        ),
+    ]
+    load = "\n".join(
+        _section(points, title="1h", metric="cpu_queue_1m", width=48, height=6)
+    )
+    assert "CPU queue (1m)" in load
+    disk = "\n".join(
+        _section(points, title="1h", metric="disk_root", width=48, height=6)
+    )
+    assert "Disk / %" in disk
+    mntc = "\n".join(
+        _section(points, title="1h", metric="disk_mntc", width=48, height=6)
+    )
+    assert "Disk /mnt/c %" in mntc

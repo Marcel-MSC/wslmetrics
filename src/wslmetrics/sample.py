@@ -16,6 +16,7 @@ from wslmetrics.models import (
     SortKey,
     SystemSummary,
 )
+from wslmetrics.prometheus import write_prom_textfile
 from wslmetrics.storage import MetricsStore
 from wslmetrics.wsl_limit import (
     get_wsl_memory_limit,
@@ -99,6 +100,10 @@ def run_sample(*, cpu_prime_seconds: float = 0.25) -> dict:
     ts = persist_snapshot(
         summary, processes, containers, groups=groups, top_n=5, group_n=15
     )
+    try:
+        write_prom_textfile(summary)
+    except Exception:  # noqa: BLE001
+        pass
 
     events = evaluate_alerts(summary, cfg.alerts)
     fired = dispatch_alerts(events, cfg.alerts)

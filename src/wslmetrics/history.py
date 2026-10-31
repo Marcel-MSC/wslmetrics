@@ -18,6 +18,12 @@ def _stats_percent(values: list[float]) -> str:
     return f"min/avg/max {min(values):.0f}/{mean(values):.0f}/{max(values):.0f}%"
 
 
+def _stats_cpu_queue(values: list[float]) -> str:
+    if not values:
+        return "no data"
+    return f"min/avg/max {min(values):.2f}/{mean(values):.2f}/{max(values):.2f}"
+
+
 def _stats_bytes(values: list[float]) -> str:
     if not values:
         return "no data"
@@ -94,6 +100,38 @@ def _section(
             return [header, "(no docker_mem data)", ""]
         stats = _stats_bytes(values)
         ylim = None
+    elif metric == "cpu_queue_1m":
+        values = [float(p.cpu_queue_1m) for p in points]
+        label = "CPU queue (1m)"
+        if not points or all(v <= 0 for v in values):
+            header = f"{title} · {label} · n={len(points)}"
+            return [header, "(no CPU queue data)", ""]
+        stats = _stats_cpu_queue(values)
+        ylim = None
+    elif metric == "disk_root":
+        values = [
+            float(p.disk_root_percent)
+            for p in points
+            if p.disk_root_percent is not None
+        ]
+        label = "Disk / %"
+        if not values:
+            header = f"{title} · {label} · n={len(points)}"
+            return [header, "(no disk / data)", ""]
+        stats = _stats_percent(values)
+        ylim = (0, 100)
+    elif metric == "disk_mntc":
+        values = [
+            float(p.disk_mntc_percent)
+            for p in points
+            if p.disk_mntc_percent is not None
+        ]
+        label = "Disk /mnt/c %"
+        if not values:
+            header = f"{title} · {label} · n={len(points)}"
+            return [header, "(no disk /mnt/c data)", ""]
+        stats = _stats_percent(values)
+        ylim = (0, 100)
     else:
         raise ValueError(f"unknown metric: {metric}")
 
@@ -135,11 +173,17 @@ def render_history_text(*, width: int = 72, height: int = 12) -> str:
         return (
             "RAM %\n(no history yet — run `wslmetrics sample` or install-job)\n\n"
             "CPU %\n(no history yet — run `wslmetrics sample` or install-job)\n\n"
-            "Docker mem\n(no history yet — run `wslmetrics sample` or install-job)"
+            "Docker mem\n(no history yet — run `wslmetrics sample` or install-job)\n\n"
+            "CPU queue (1m)\n(no history yet — run `wslmetrics sample` or install-job)\n\n"
+            "Disk / %\n(no history yet — run `wslmetrics sample` or install-job)"
         )
 
+    metrics = ["mem", "cpu", "docker_mem", "cpu_queue_1m", "disk_root"]
+    if any(p.disk_mntc_percent is not None for p in series):
+        metrics.append("disk_mntc")
+
     lines: list[str] = []
-    for metric in ("mem", "cpu", "docker_mem"):
+    for metric in metrics:
         lines.extend(
             _section(
                 series,

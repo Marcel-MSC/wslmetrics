@@ -5,9 +5,39 @@ import sys
 from pathlib import Path
 
 from wslmetrics.app import MonitorApp
-from wslmetrics.export import export_csv
+from wslmetrics.export import export_csv, export_json
 from wslmetrics.jobs import install_job, status_report, uninstall_job
 from wslmetrics.sample import format_sample_result, run_sample
+
+
+def _add_export_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--from",
+        dest="from_ts",
+        default=None,
+        help="Start time (epoch seconds or ISO-8601). Default: 24h ago",
+    )
+    parser.add_argument(
+        "--to",
+        dest="to_ts",
+        default=None,
+        help="End time (epoch seconds or ISO-8601). Default: now",
+    )
+    parser.add_argument(
+        "--include-processes",
+        action="store_true",
+        help="Also include top processes (raw 24h window)",
+    )
+    parser.add_argument(
+        "--include-containers",
+        action="store_true",
+        help="Also include Docker containers (raw 24h window)",
+    )
+    parser.add_argument(
+        "--include-groups",
+        action="store_true",
+        help="Also include process groups (raw 24h window)",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -55,23 +85,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("metrics.csv"),
         help="Output CSV path (default: metrics.csv)",
     )
-    export_p.add_argument(
-        "--from",
-        dest="from_ts",
-        default=None,
-        help="Start time (epoch seconds or ISO-8601). Default: 24h ago",
+    _add_export_flags(export_p)
+
+    export_j = sub.add_parser("export-json", help="Export metrics history to JSON")
+    export_j.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=Path("metrics.json"),
+        help="Output JSON path (default: metrics.json)",
     )
-    export_p.add_argument(
-        "--to",
-        dest="to_ts",
-        default=None,
-        help="End time (epoch seconds or ISO-8601). Default: now",
-    )
-    export_p.add_argument(
-        "--include-processes",
-        action="store_true",
-        help="Also write <stem>_processes.csv for raw top processes",
-    )
+    _add_export_flags(export_j)
 
     sub.add_parser("install-job", help="Install and enable systemd --user sample timer")
     sub.add_parser("uninstall-job", help="Disable and remove systemd --user sample timer")
@@ -85,6 +109,21 @@ def _run_tui(interval: float, top: int) -> None:
     app.run()
 
 
+def _print_sidecar_paths(
+    path: Path,
+    *,
+    include_processes: bool,
+    include_containers: bool,
+    include_groups: bool,
+) -> None:
+    if include_processes:
+        print(f"Wrote {path.with_name(path.stem + '_processes' + path.suffix)}")
+    if include_containers:
+        print(f"Wrote {path.with_name(path.stem + '_containers' + path.suffix)}")
+    if include_groups:
+        print(f"Wrote {path.with_name(path.stem + '_groups' + path.suffix)}")
+
+
 def main(argv: list[str] | None = None) -> None:
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
@@ -94,6 +133,7 @@ def main(argv: list[str] | None = None) -> None:
         "tui",
         "sample",
         "export-csv",
+        "export-json",
         "install-job",
         "uninstall-job",
         "status",
@@ -128,10 +168,28 @@ def main(argv: list[str] | None = None) -> None:
             from_ts=args.from_ts,
             to_ts=args.to_ts,
             include_processes=args.include_processes,
+            include_containers=args.include_containers,
+            include_groups=args.include_groups,
         )
         print(f"Wrote {path}")
-        if args.include_processes:
-            print(f"Wrote {path.with_name(path.stem + '_processes' + path.suffix)}")
+        _print_sidecar_paths(
+            path,
+            include_processes=args.include_processes,
+            include_containers=args.include_containers,
+            include_groups=args.include_groups,
+        )
+        return
+
+    if command == "export-json":
+        path = export_json(
+            args.output,
+            from_ts=args.from_ts,
+            to_ts=args.to_ts,
+            include_processes=args.include_processes,
+            include_containers=args.include_containers,
+            include_groups=args.include_groups,
+        )
+        print(f"Wrote {path}")
         return
 
     if command == "install-job":

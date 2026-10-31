@@ -1,6 +1,6 @@
 # wslmetrics
 
-TUI no terminal para monitorar **CPU**, **RAM** e **swap** no WSL: top processos (agrupados ou por PID), containers Docker, diffs de RAM, histórico com gráficos, alertas e export CSV.
+TUI no terminal para monitorar **CPU**, **RAM**, **swap**, **disk**, **load** e **rede** no WSL: top processos (agrupados ou por PID), detalhe/kill, containers Docker, diffs de RAM, histórico com gráficos, alertas e export CSV/JSON (+ textfile Prometheus).
 
 ## Requisitos
 
@@ -27,8 +27,12 @@ Atualizar depois de mudanças no código:
 
 ```bash
 pipx reinstall wslmetrics
-# ou, se instalou com -e, basta editar o código
+# desenvolvimento editable (reflete src/ sem reinstall a cada edit):
+pipx install -e /path/to/wslmetrics --force
+# depois: feche a TUI (q) e abra de novo — processo antigo não recarrega código
 ```
+
+Confira qual binário está no PATH (`which -a wslmetrics`): `~/.local/bin/wslmetrics` é o pipx; `.venv/bin/wslmetrics` só vale com o venv ativado. `pip install -e .` no venv **não** atualiza o pipx.
 
 ### Com venv
 
@@ -105,7 +109,9 @@ wslmetrics --top 50
 | `t`   | Alterar `top` na sessão                   |
 | `i`   | Alterar `interval` (s) na sessão          |
 | `/`   | Filtrar por nome (Processes + Containers) |
-| `Esc` | Fechar prompt / limpar filtro             |
+| `d`   | Detalhe do processo; `k` = SIGTERM (seu user), `K` = sudo kill (senha) |
+| `Enter` / double-click | Copiar célula (Processes + Containers) |
+| `Esc` | Fechar prompt / limpar filtro / fechar modal |
 
 Com **GROUP ON**, aparece um badge amarelo e o subtítulo `GROUP ON` no header.  
 Com **PERSIST ON**, grava no SQLite no máximo a cada `sample_interval_seconds` (config) — útil para History/Diffs sem o job systemd; **não** dispara alertas.  
@@ -113,10 +119,11 @@ Com alerta recente (dentro do cooldown), aparece o badge **ALERT**.
 
 Abas:
 
-- **Processes** — por PID ou agrupado (`g`)
+- **Processes** — por PID ou agrupado (`g`); `d` abre detalhe
 - **Containers** — sort `c`/`m` + filtro `/`
+- **System** — load, CPU por core, mounts `/` e `/mnt/c`, I/O e rede (B/s)
 - **Diffs** — crescimento de RAM de processos e containers (último sample + última 1h)
-- **History** — gráficos de RAM%, CPU% e Docker mem
+- **History** — gráficos de RAM%, CPU%, Docker mem, CPU queue (1m) e disk %
 - **Alerts** — thresholds, cooldown e tail de `alerts.log`
 
 ## Histórico e jobs
@@ -135,6 +142,7 @@ Dados em `~/.local/state/wslmetrics/`:
 | Arquivo       | Conteúdo                                         |
 |---------------|--------------------------------------------------|
 | `metrics.db`  | Samples + top PIDs + process groups + Docker     |
+| `metrics.prom`| Textfile Prometheus (atualizado a cada `sample`) |
 | `alerts.log`  | Histórico de alertas                             |
 
 Retenção (otimizada):
@@ -170,16 +178,19 @@ A aba **Alerts** só lê log/state (não avalia thresholds no refresh live).
 O app lê `memory=` e `swap=` da seção `[wsl2]` em `%USERPROFILE%\.wslconfig` (via `/mnt/c/Users/...`).  
 Se encontrar, a summary bar mostra uso vs limite WSL; o alerta `wsl_mem_percent` dispara perto do teto de RAM da VM. Swap real vem de `psutil`; o limite `swap=` do `.wslconfig` aparece quando disponível.
 
-## Export CSV
+## Export CSV / JSON
 
 ```bash
 wslmetrics export-csv -o metrics.csv
 wslmetrics export-csv --from 2026-10-09T00:00:00Z --to 2026-10-10T00:00:00Z
-wslmetrics export-csv -o metrics.csv --include-processes
+wslmetrics export-csv -o metrics.csv --include-processes --include-containers --include-groups
+wslmetrics export-json -o metrics.json --include-containers --include-groups
 ```
 
-Colunas: `ts,iso,cpu,mem_percent,mem_used,mem_total,docker_mem`.  
-Com `--include-processes`, também gera `*_processes.csv` (só janela raw de 24h).
+Samples: `ts,iso,cpu,mem_percent,mem_used,mem_total,docker_mem,cpu_queue_1m,disk_*,net_*`.  
+Flags `--include-*` geram sidecars CSV (`*_processes.csv`, `*_containers.csv`, `*_groups.csv`) ou chaves extras no JSON (janela raw de 24h).
+
+Cada `wslmetrics sample` (e persist da TUI) também grava `~/.local/state/wslmetrics/metrics.prom` para o textfile collector do node_exporter.
 
 ## Notas WSL
 

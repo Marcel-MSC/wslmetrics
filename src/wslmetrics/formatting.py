@@ -16,3 +16,10 @@ def format_bytes(num: int | float) -> str:
 
 def format_percent(value: float, digits: int = 1) -> str:
     return f"{value:.{digits}f}%"
+
+
+def format_rate(bytes_per_sec: float | None) -> str:
+    """Format a byte/s rate; em-dash when unknown."""
+    if bytes_per_sec is None:
+        return "—"
+    return f"{format_bytes(bytes_per_sec)}/s"
